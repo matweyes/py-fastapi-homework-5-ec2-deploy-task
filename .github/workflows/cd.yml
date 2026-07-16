@@ -1,0 +1,56 @@
+name: CD - Deploy to EC2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure running on main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "This workflow can only be run from the main branch. Current ref: ${{ github.ref }}"
+          exit 1
+
+  check-ci-status:
+    needs: check-branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify latest CI run on main succeeded
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          STATUS=$(gh run list \
+            --workflow=main.yml \
+            --branch=main \
+            --limit=1 \
+            --json conclusion \
+            --jq '.[0].conclusion')
+          echo "Latest CI conclusion: $STATUS"
+          if [ "$STATUS" != "success" ]; then
+            echo "Latest CI Pipeline run on main did not succeed. Aborting deploy."
+            exit 1
+          fi
+
+  deploy:
+    needs: check-ci-status
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+      - name: Add EC2 host to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy on EC2
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} \
+            "bash ${{ secrets.EC2_PROJECT_PATH }}/commands/deploy.sh"
